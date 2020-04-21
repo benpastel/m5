@@ -113,51 +113,8 @@ def load_data():
   return X, y
 
 
-def run_1():
-  X, y = load_data()
-  days, items, feats = X.shape
-  assert y.shape == (days, items)
-
-  # cut off the last 3 months for validation sets
-  # outputs are (rows, feats)
-  valids = {
-    'last month': (X[-28:].reshape(-1, feats), y[-28:].flatten()),
-    '2nd to last month': (X[-56:-28].reshape(-1, feats), y[-56:-28].flatten()),
-    '3rd to last month': (X[-84:-56].reshape(-1, feats), y[-84:-56].flatten()),
-  }
-  X = X[:-84]
-  y = y[:-84]
-
-  # for the remaining 1463 days, choose a random 20% to validate
-  assert len(X) == 1463
-  valid_count = len(X) // 5
-  valid_idx = np.random.choice(np.arange(len(X)), size=valid_count, replace=False)
-  is_valid = np.zeros(len(X), dtype=bool)
-  is_valid[valid_idx] = True
-  valids['random 20%'] = (X[is_valid].reshape(-1, feats), y[is_valid].flatten())
-  train_X = X[~is_valid].reshape(-1, feats)
-  train_y = y[~is_valid].flatten()
-
-  # TODO: don't include valid information in valid features
-  # features need to come AFTER the day splits
-  del X
-  del y
-  gc.collect()
-
-  with timed(f'training lightgbm with X.shape={train_X.shape}'):
-    model = lgb.LGBMRegressor(n_estimators=10)
-    model.fit(train_X, train_y)
-
-  with timed('validating lightgbm...'):
-    print('train:')
-    valid_stats(model.predict(train_X), train_y)
-    for valid_name, (valid_X, valid_y) in valids.items():
-      print(f'{valid_name}:')
-      valid_stats(model.predict(valid_X), valid_y)
-
-
-def run_2():
-  valid_days = 365
+def validate_on_end():
+  valid_days = 84
 
   X, y = load_data()
   days, items, feats = X.shape
@@ -243,7 +200,8 @@ def run_2():
   plt.plot(idx, daily_maes, 'r+')
   plt.show()
 
+
 if __name__ == '__main__':
-  run_2()
+  validate_on_end()
 
 

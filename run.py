@@ -10,7 +10,7 @@ from utils import timed
 import matplotlib.pyplot as plt
 
 ALL_DAYS = 1969
-DATA_DAYS = 1912
+DATA_DAYS = 1913
 ALL_ITEMS = 30490
 SKIP_DAYS = 365
 VALID_DAYS = 84
@@ -192,6 +192,7 @@ def validate_on_end():
     daily_maes = np.zeros(VALID_DAYS)
 
     sales = load_sales()
+
     valid_preds = np.zeros((VALID_DAYS, ALL_ITEMS), dtype=np.float32)
     for t in range(VALID_DAYS):
       # print(f'day {t}:')

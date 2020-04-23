@@ -166,6 +166,8 @@ def validate_on_end():
   X, y = load_data()
   days, items, feats = X.shape
   assert y.shape == (days, items)
+  assert items == ALL_ITEMS
+  assert days == DATA_DAYS - SKIP_DAYS
 
   # cut off the last month for validation set
   # but we're going to re-calc the features as we go based on predictions
@@ -181,11 +183,14 @@ def validate_on_end():
   gc.collect()
 
   with timed(f'training lightgbm with X.shape={train_X.shape}'):
-    model = lgb.LGBMRegressor(n_estimators=100)
+    model = lgb.LGBMRegressor(n_estimators=10)
     model.fit(train_X, train_y)
 
   print('train error:')
   valid_stats(model.predict(train_X), train_y, should_print=True)
+
+  print('oracle validation error:')
+  valid_stats(model.predict(oracle_valid_X.reshape(-1, feats)), valid_y.flatten(), should_print=True)
 
   with timed('validating lightgbm...'):
     daily_mses = np.zeros(VALID_DAYS)
@@ -196,31 +201,31 @@ def validate_on_end():
     valid_preds = np.zeros((VALID_DAYS, ALL_ITEMS), dtype=np.float32)
     for t in range(VALID_DAYS):
       # print(f'day {t}:')
-      X = np.zeros((feats, ALL_ITEMS), dtype=np.uint8)
+      X = np.zeros((feats, ALL_ITEMS), dtype=np.uint16)
 
       # t is the index into valid_preds
       # d is the index into sales
       d = len(sales) - VALID_DAYS + t
 
-      # 1 feature: previous day
+      # # 1 feature: previous day
       X[0] = sales[d-1]
 
-      # 5 features: previous 7 days
+      # # 5 features: previous 7 days
       X[1] = sales[d-7]
       X[2] = np.mean(sales[d-7:d], axis=0) * 80
       X[3] = np.min(sales[d-7:d], axis=0)
       X[4] = np.max(sales[d-7:d], axis=0)
       X[5] = np.std(sales[d-7:d], axis=0) * 10
 
-      # 4 features: previous 28 days
-      # (min is almost always going to be 0)
+      # # 4 features: previous 28 days
+      # # (min is almost always going to be 0)
       X[6] = sales[d-28]
       X[7] = np.mean(sales[d-28:d], axis=0) * 80
       X[8] = np.max(sales[d-28:d], axis=0)
       X[9] = np.std(sales[d-28:d], axis=0) * 10
 
-      # 5 features: previous 365 days
-      # (min is almost always going to be 0)
+      # # 5 features: previous 365 days
+      # # (min is almost always going to be 0)
       X[10] = sales[d-365]
       X[11] = np.mean(sales[d-365:d], axis=0) * 80
       X[12] = np.max(sales[d-365:d], axis=0)

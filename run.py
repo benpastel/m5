@@ -11,9 +11,9 @@ import matplotlib.pyplot as plt
 
 ALL_DAYS = 1969
 DATA_DAYS = 1913
-ALL_ITEMS = 30490
-SKIP_DAYS = 365
-VALID_DAYS = 84
+ALL_IDS = 30490
+VALID_DAYS = 28
+SKIP_DAYS = 365 + VALID_DAYS
 
 def valid_stats(preds, trues, should_print=True):
   assert preds.ndim == 1
@@ -29,7 +29,7 @@ def valid_stats(preds, trues, should_print=True):
 
 def load_sales():
   frame = pd.read_csv('data/sales_train_validation.csv')
-  sales = np.zeros((DATA_DAYS, ALL_ITEMS), dtype=int)
+  sales = np.zeros((DATA_DAYS, ALL_IDS), dtype=int)
   for d in range(DATA_DAYS):
     sales[d, :] = frame[f'd_{d+1}'].values
 
@@ -89,73 +89,74 @@ def load_data():
     sales_frame = pd.read_csv('data/sales_train_validation.csv')
     sales = load_sales()
 
-    # y is (days, items) after the first year
+    # y is (days, ids) after the first year
     y = sales[SKIP_DAYS:,:]
 
-    # start with a very simple timeseries prediction setup
-    #
-    # skip the first 365 days, then predict each day based on:
-    #   the previous day
-    #   the previous 7 days
-    #   the previous 28 days
-    #   the previous 365 days
-    target_days = DATA_DAYS - SKIP_DAYS
-    rows = ALL_ITEMS * target_days
-
+    uniques = {}
     ordinals = {}
-    for c, col in enumerate(['item_id', 'dept_id', 'cat_id', 'store_id', 'state_id']):
-      _, inverse = np.unique(sales_frame[col], return_inverse=True)
-      ordinals[c] = inverse
+    for col in ['item_id', 'dept_id', 'cat_id', 'store_id', 'state_id']:
+      u, inverse = np.unique(sales_frame[col], return_inverse=True)
+      uniques[col] = u
+      ordinals[col] = inverse
 
-    # this axes order is efficient for writing
-    # approximate with uint16 for efficiency
-    # scale floats before the uint16 truncation:
-    #
-    #   np.max(sales) == 763 so 80 is a safe scale for mean
-    #   np.std is harder to predict, so use 10 to be more cautious
-    feats = 29
-    X = np.zeros((target_days, feats, ALL_ITEMS), dtype=np.uint16)
+    target_days = DATA_DAYS - SKIP_DAYS
+    feats = 5 + 4 + (5 * 2)
+    X = np.zeros((target_days, feats, ALL_IDS), dtype=np.float32)
+
+    # broadcast over all ids
+    train_day_feats = day_feats[SKIP_DAYS:SKIP_DAYS+target_days,:]
+    X[:, 0:5, :] = train_day_feats.reshape(target_days, 5, 1)
+
+    # for dept_id, cat_id, store_id, state_id there are few enough values we can just
+    # pass them in as ordinals directly.
+    # broadcast over all days
+    X[:, 5, :] = ordinals['dept_id']
+    X[:, 6, :] = ordinals['cat_id']
+    X[:, 7, :] = ordinals['store_id']
+    X[:, 8, :] = ordinals['state_id']
+
+    # for id and item_id, try a bunch of different embeddings.
+    # for now, all sales aggregations must be validation-safe:
+    # they only use info from t - VALID_DAYS and earlier.
+
+    # start with:
+    #   (1) mean, min, max, std, nonzero over previous year
+    # TODO:
+    #   try over different windows (month, week)
+    #   try over different slices (sharing holiday; sharing day of week; etc.)
+
+    # ID features
     for t in range(target_days):
       if (t % 100) == 0:
         print(f'{t}/{target_days}')
-      d = t + SKIP_DAYS
 
-      # 1 feature: previous day
-      X[t, 0] = sales[d-1]
+      d = SKIP_DAYS + t - VALID_DAYS
 
-      # 5 features: previous 7 days
-      X[t, 1] = sales[d-7]
-      X[t, 2] = np.mean(sales[d-7:d], axis=0) * 80
-      X[t, 3] = np.min(sales[d-7:d], axis=0)
-      X[t, 4] = np.max(sales[d-7:d], axis=0)
-      X[t, 5] = np.std(sales[d-7:d], axis=0) * 10
+      assert d-365 >= 0
+      group = sales[d-365:d]
 
-      # 4 features: previous 28 days
-      # (min is almost always going to be 0)
-      X[t, 6] = sales[d-28]
-      X[t, 7] = np.mean(sales[d-28:d], axis=0) * 80
-      X[t, 8] = np.max(sales[d-28:d], axis=0)
-      X[t, 9] = np.std(sales[d-28:d], axis=0) * 10
+      X[t, 9, :] = np.mean(group, axis=0)
+      X[t, 10, :] = np.min(group, axis=0)
+      X[t, 11, :] = np.max(group, axis=0)
+      X[t, 12, :] = np.std(group, axis=0)
+      X[t, 13, :] = np.count_nonzero(group, axis=0)
 
-      # 5 features: previous 365 days
-      # (min is almost always going to be 0)
-      X[t, 10] = sales[d-365]
-      X[t, 11] = np.mean(sales[d-365:d], axis=0) * 80
-      X[t, 12] = np.max(sales[d-365:d], axis=0)
-      X[t, 13] = np.std(sales[d-365:d], axis=0) * 10
+      for i in range(len(uniques['item_id'])):
+        is_item = (ordinals['item_id'] == i)
+        item_group = group[:, is_item]
 
-      # 5 features: ordinals for the categorical variables
-      X[t, 14] = ordinals[0]
-      X[t, 15] = ordinals[1]
-      X[t, 16] = ordinals[2]
-      X[t, 17] = ordinals[3]
-      X[t, 18] = ordinals[4]
+        # print(f'{ordinals["item_id"].shape=}')
+        # print(f'{is_item.shape=}, {np.count_nonzero(is_item)=}')
+        # print(f'{group.shape=}, {item_group.shape=}, {np.mean(item_group, axis=0).shape=}, {X[t, 14, is_item].shape=}')
 
-      # broadcast the 5 day features across all items
-      X[t, 19:24, :] = day_feats[d].reshape(-1, 1)
+        X[t, 14, is_item] = np.mean(item_group, axis=0)
+        X[t, 15, is_item] = np.min(item_group, axis=0)
+        X[t, 16, is_item] = np.max(item_group, axis=0)
+        X[t, 17, is_item] = np.std(item_group, axis=0)
+        X[t, 18, is_item] = np.count_nonzero(item_group, axis=0)
 
   X = np.swapaxes(X, 1, 2)
-  assert X.shape == (target_days, ALL_ITEMS, feats)
+  assert X.shape == (target_days, ALL_IDS, feats)
 
   with timed('saving...'):
     np.savez_compressed(XY_CACHE, X=X, y=y)
@@ -164,97 +165,28 @@ def load_data():
 
 def validate_on_end():
   X, y = load_data()
-  days, items, feats = X.shape
-  assert y.shape == (days, items)
-  assert items == ALL_ITEMS
+  days, ids, feats = X.shape
+  assert y.shape == (days, ids)
+  assert ids == ALL_IDS
   assert days == DATA_DAYS - SKIP_DAYS
 
-  # cut off the last month for validation set
-  # but we're going to re-calc the features as we go based on predictions
-  oracle_valid_X = X[-VALID_DAYS:]
-  valid_y = y[-VALID_DAYS:]
+  valid_X = X[-VALID_DAYS:].reshape(-1, feats)
+  valid_y = y[-VALID_DAYS:].flatten()
   train_X = X[:-VALID_DAYS].reshape(-1, feats)
   train_y = y[:-VALID_DAYS].flatten()
-
-  assert valid_y.shape == (VALID_DAYS, items)
-  assert len(train_X) == len(train_y)
   del X
   del y
   gc.collect()
 
   with timed(f'training lightgbm with X.shape={train_X.shape}'):
-    model = lgb.LGBMRegressor(n_estimators=10)
+    model = lgb.LGBMRegressor(n_estimators=100)
     model.fit(train_X, train_y)
 
   print('train error:')
   valid_stats(model.predict(train_X), train_y, should_print=True)
 
-  print('oracle validation error:')
-  valid_stats(model.predict(oracle_valid_X.reshape(-1, feats)), valid_y.flatten(), should_print=True)
-
-  with timed('validating lightgbm...'):
-    daily_mses = np.zeros(VALID_DAYS)
-    daily_maes = np.zeros(VALID_DAYS)
-
-    sales = load_sales()
-
-    valid_preds = np.zeros((VALID_DAYS, ALL_ITEMS), dtype=np.float32)
-    for t in range(VALID_DAYS):
-      # print(f'day {t}:')
-      X = np.zeros((feats, ALL_ITEMS), dtype=np.uint16)
-
-      # t is the index into valid_preds
-      # d is the index into sales
-      d = len(sales) - VALID_DAYS + t
-
-      # # 1 feature: previous day
-      X[0] = sales[d-1]
-
-      # # 5 features: previous 7 days
-      X[1] = sales[d-7]
-      X[2] = np.mean(sales[d-7:d], axis=0) * 80
-      X[3] = np.min(sales[d-7:d], axis=0)
-      X[4] = np.max(sales[d-7:d], axis=0)
-      X[5] = np.std(sales[d-7:d], axis=0) * 10
-
-      # # 4 features: previous 28 days
-      # # (min is almost always going to be 0)
-      X[6] = sales[d-28]
-      X[7] = np.mean(sales[d-28:d], axis=0) * 80
-      X[8] = np.max(sales[d-28:d], axis=0)
-      X[9] = np.std(sales[d-28:d], axis=0) * 10
-
-      # # 5 features: previous 365 days
-      # # (min is almost always going to be 0)
-      X[10] = sales[d-365]
-      X[11] = np.mean(sales[d-365:d], axis=0) * 80
-      X[12] = np.max(sales[d-365:d], axis=0)
-      X[13] = np.std(sales[d-365:d], axis=0) * 10
-
-      # 5 ID + 5 day features don't depend on future information
-      # these don't depend on future information so we can use the oracle features directly
-      X[14:24, :] = oracle_valid_X[t, :, 14:24].T
-
-      # (feats, items) => (items, feats)
-      X = X.T
-      day_preds = model.predict(X)
-      assert day_preds.shape == (ALL_ITEMS,)
-      valid_preds[t] = day_preds
-
-      # overwrite sales with predicted sale on this day
-      sales[d, :] = day_preds
-
-      mse, mae = valid_stats(day_preds, valid_y[t], should_print=False)
-      daily_mses[t] = mse
-      daily_maes[t] = mae
-
-  print(f'validation on last {VALID_DAYS}:')
-  valid_stats(valid_preds.flatten(), valid_y.flatten(), should_print=True)
-
-  idx = np.arange(VALID_DAYS)
-  # plt.plot(idx, daily_mses, 'bo', idx, daily_maes, 'r+')
-  plt.plot(idx, daily_maes, 'r+')
-  plt.show()
+  print('valid error:')
+  valid_stats(model.predict(valid_X), valid_y, should_print=True)
 
 
 if __name__ == '__main__':
